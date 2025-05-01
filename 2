@@ -1,0 +1,23 @@
+// motorcycle.proto - No changes needed
+syntax = "proto3";
+
+package motorcycle;
+option go_package = "github.com/StevenD2002/ninja650sim/proto";
+
+// Basic engine data
+message EngineData {
+  double rpm = 1;
+  double throttle_position = 2; // 0-100%
+  int64 timestamp = 3;
+}
+
+// User input
+message UserInput {
+  double throttle_position = 1; // 0-100%
+}
+
+// Service definition
+service MotorcycleSimulator {
+  // Stream real-time engine data
+  rpc StreamEngine(stream UserInput) returns (stream EngineData) {}
+}

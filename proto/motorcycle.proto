@@ -1,0 +1,88 @@
+syntax = "proto3";
+
+package motorcycle;
+option go_package = "github.com/yourusername/ninja650sim/proto";
+
+// Basic engine data
+message EngineData {
+  double rpm = 1;
+  double throttle_position = 2; // 0-100%
+  int64 timestamp = 3;
+  
+  // Optional extended data
+  double power = 4;            // Horsepower
+  double torque = 5;           // Nm
+  double engine_temp = 6;      // Celsius
+  double afr_current = 7;      // Current Air/Fuel Ratio
+  double afr_target = 8;       // Target Air/Fuel Ratio
+  double fuel_injection_ms = 9; // Fuel injection duration in ms
+  double ignition_advance = 10; // Ignition timing in degrees BTDC
+}
+
+// User input
+message UserInput {
+  double throttle_position = 1; // 0-100%
+}
+
+// A single row in a 2D map
+message MapRow {
+  repeated double values = 1;
+}
+
+// A 2D map (e.g., fuel, ignition)
+message Map2D {
+  string type = 1;  // "fuel", "ignition", or "afr"
+  repeated double rpm_breakpoints = 2;
+  repeated double load_breakpoints = 3;
+  repeated MapRow values = 4;
+}
+
+// All ECU maps
+message ECUMaps {
+  Map2D fuel_map = 1;
+  Map2D ignition_map = 2;
+  Map2D afr_map = 3;
+}
+
+// Request for ECU maps
+message MapsRequest {
+  // Empty request, could add filters in the future
+}
+
+// Request to update a map cell
+message MapUpdateRequest {
+  string map_type = 1; // "fuel", "ignition", or "afr"
+  double rpm = 2;
+  double load = 3;
+  double value = 4;
+}
+
+// ECU settings
+message ECUSettings {
+  double fuel_trim = 1;
+  double ignition_trim = 2;
+  double idle_rpm = 3;
+  double rev_limit = 4;
+  bool temp_compensation = 5;
+}
+
+// Status response for updates
+message UpdateStatus {
+  bool success = 1;
+  string message = 2;
+}
+
+// Service definition
+service MotorcycleSimulator {
+  // Stream real-time engine data
+  rpc StreamEngine(stream UserInput) returns (stream EngineData) {}
+  
+  // Get current ECU maps
+  rpc GetECUMaps(MapsRequest) returns (ECUMaps) {}
+  
+  // Update a specific map cell
+  rpc UpdateECUMap(MapUpdateRequest) returns (UpdateStatus) {}
+  
+  // Update ECU settings
+  rpc SetECUSettings(ECUSettings) returns (UpdateStatus) {}
+}
