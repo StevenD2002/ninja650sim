@@ -9,7 +9,6 @@ message EngineData {
   double throttle_position = 2; // 0-100%
   int64 timestamp = 3;
   
-  // Optional extended data
   double power = 4;            // Horsepower
   double torque = 5;           // Nm
   double engine_temp = 6;      // Celsius
@@ -17,11 +16,16 @@ message EngineData {
   double afr_target = 8;       // Target Air/Fuel Ratio
   double fuel_injection_ms = 9; // Fuel injection duration in ms
   double ignition_advance = 10; // Ignition timing in degrees BTDC
+  int32 gear = 11;
+  double speed = 12;            // km/h
+  double clutch_position = 13;  // 0-1
 }
 
 // User input
 message UserInput {
   double throttle_position = 1; // 0-100%
+  double clutch_position = 2;   // 0-1 (0=engaged, 1=disengaged)
+  int32 gear = 3;               // 0=Neutral, 1-6=Gears
 }
 
 // A single row in a 2D map

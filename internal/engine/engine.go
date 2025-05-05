@@ -40,7 +40,6 @@ type Engine struct {
 	// Current state
 	RPM              float64
 	ThrottlePosition float64
-	ClutchPosition   float64 // 0.0 = fully engaged, 1.0 = fully disengaged
 	EngineTemp       float64 // Celsius
 	AirTemp          float64 // Celsius
 	MAP              float64 // kPa
@@ -48,6 +47,7 @@ type Engine struct {
 	Speed            float64 // km/h
 	Gear             int     // 0 = neutral, 1-6 = gears
 	BrakeApplied     bool
+	RevLimit         float64 // RPM at which rev limiter kicks in
 
 	// Environment settings
 	AmbientTemp float64 // Celsius
@@ -64,6 +64,17 @@ type Engine struct {
 
 	// Internal tracking
 	lastUpdateTime time.Time
+
+	// Transmission properties
+	CurrentGear        int       // 0 = neutral, 1-6 = gears
+	GearRatios         []float64 // Gear ratios for each gear
+	FinalDriveRatio    float64   // Chain/sprocket ratio
+	WheelCircumference float64   // Wheel circumference in meters
+
+	// Clutch properties
+	ClutchSlip     float64 // How much power gets through partially engaged clutch
+	ClutchPosition float64 // 0.0 = fully engaged, 1.0 = fully disengaged
+	ShiftTimer     float64 // Timer for shift animation/physics
 }
 
 // NewEngine creates a new engine model with default Ninja 650 parameters
@@ -89,6 +100,7 @@ func NewEngine() *Engine {
 		Speed:            0,     // Not moving
 		Gear:             0,     // Neutral
 		BrakeApplied:     false, // No brakes
+		RevLimit:         0,     // No rev limit
 
 		// Environment
 		AmbientTemp: 25, // Celsius
@@ -105,14 +117,25 @@ func NewEngine() *Engine {
 
 		// Initialize the last update time
 		lastUpdateTime: time.Now(),
+
+		ClutchSlip: 0.0, // start with no slip
+
+		GearRatios: []float64{
+			0.0,   // Neutral
+			2.438, // 1st gear
+			1.714, // 2nd gear
+			1.333, // 3rd gear
+			1.111, // 4th gear
+			0.966, // 5th gear
+			0.852, // 6th gear
+		},
+		FinalDriveRatio:    3.067, // Chain drive ratio
+		WheelCircumference: 1.95,  // meters (650cc sport bike)
 	}
 }
 
-// Update engine state based on ECU outputs
 func (e *Engine) Update(ecuOutputs ECUOutputs, deltaTime float64) {
-	// Calculate forces
-
-	// 1. Engine torque based on throttle, RPM and fuel/ignition settings
+	// Calculate baseline engine torque
 	baselineTorque := e.calculateBaselineTorque()
 	torqueMultiplier := 1.0
 
@@ -143,40 +166,41 @@ func (e *Engine) Update(ecuOutputs ECUOutputs, deltaTime float64) {
 	// Apply throttle position
 	torqueMultiplier *= e.ThrottlePosition / 100.0
 
-	// Final torque
+	// Final engine torque
 	engineTorque := baselineTorque * torqueMultiplier
 
-	// 2. Calculate acceleration
-	if e.ClutchPosition < 0.5 && e.Gear > 0 {
-		// Power is being transmitted to wheels
-		// (Simplified - would need gearing ratios, final drive ratio, etc.)
-		gearRatio := e.getGearRatio(e.Gear)
-		wheelTorque := engineTorque * gearRatio
+	// Calculate clutch transfer torque
+	transferTorque := engineTorque
+	clutchSlipping := false
 
-		// Apply wheel torque to change speed
-		// (Very simplified physics)
-		acceleration := wheelTorque / 250.0 // Arbitrary mass factor
+	if e.ClutchPosition > 0.0 {
+		// Reduce torque transfer based on clutch position
+		// 0.0 = fully engaged, 1.0 = fully disengaged
+		clutchFactor := 1.0 - e.ClutchPosition
+		transferTorque = engineTorque * clutchFactor
 
-		// Apply braking
-		if e.BrakeApplied {
-			acceleration -= 5.0 // Hard braking
+		// Calculate clutch slip when partially engaged
+		if e.ClutchPosition > 0.0 && e.ClutchPosition < 1.0 {
+			clutchSlipping = true
+
+			// Calculate RPM difference between engine and transmission input
+			transmissionInputRPM := e.calculateTransmissionInputRPM()
+			rpmDiff := e.RPM - transmissionInputRPM
+
+			// Store slip value for potential display/analysis
+			e.ClutchSlip = rpmDiff * (1.0 - e.ClutchPosition)
 		}
+	}
 
-		// Update speed
-		e.Speed += acceleration * deltaTime
-		e.Speed = math.Max(0, e.Speed)
+	// Handle vehicle physics based on clutch and gear state
+	if e.ClutchPosition >= 0.95 || e.Gear == 0 {
+		// CASE 1: Clutch fully disengaged or in neutral - engine runs free
 
-		// Calculate RPM from speed if clutch engaged
-		if e.Speed > 0 {
-			e.RPM = (e.Speed * 1000 / 3600) * 60 * gearRatio * 100
-			e.RPM = math.Min(e.RPM, e.RedlineRPM)
-		}
-	} else {
-		// Clutch disengaged or neutral - engine can rev freely
+		// Calculate RPM change based only on engine torque and internal friction
 		rpmChange := (engineTorque - (e.RPM * 0.001)) * 10 / e.RotationalInertia
 		e.RPM += rpmChange * deltaTime
 
-		// Apply engine braking and idle control
+		// Apply idle control
 		if e.ThrottlePosition < 5 {
 			targetIdle := ecuOutputs.TargetIdleRPM
 			if targetIdle < 800 {
@@ -191,24 +215,137 @@ func (e *Engine) Update(ecuOutputs ECUOutputs, deltaTime float64) {
 			}
 		}
 
-		// Apply speed changes if clutch disengaged
-		if e.ClutchPosition > 0.5 && e.Gear > 0 {
-			brakeValue := 0.5
-			if e.BrakeApplied {
-				brakeValue = 5.0
+		// Handle vehicle deceleration (no engine braking)
+		brakeValue := 0.5
+		if e.BrakeApplied {
+			brakeValue = 5.0
+		}
+
+		// Apply aerodynamic drag and rolling resistance
+		dragForce := e.DragCoefficient*e.Speed*e.Speed*0.001 + brakeValue
+		e.Speed = math.Max(0, e.Speed-dragForce*deltaTime)
+
+	} else if clutchSlipping {
+		// CASE 2: Clutch partially engaged - complex model with slip
+
+		// Calculate torque at wheels
+		gearRatio := e.getGearRatio(e.Gear)
+		finalDriveRatio := e.FinalDriveRatio
+		wheelTorque := transferTorque * gearRatio * finalDriveRatio
+
+		// Calculate wheel force and acceleration
+		wheelRadius := e.WheelCircumference / (2 * math.Pi)
+		wheelForce := wheelTorque / wheelRadius
+
+		// Mass factor - simplified physics
+		vehicleMass := 200.0 // kg, approximate mass of Ninja 650 with rider
+		acceleration := wheelForce / vehicleMass
+
+		// Apply to speed
+		e.Speed += acceleration * deltaTime
+
+		// Calculate engine RPM changes due to torque and slip
+		// Engine is pulled down by transmission but also pushed by throttle
+		rpmPulldown := e.ClutchSlip * (1.0 - e.ClutchPosition) * 0.1
+		rpmFromTorque := (engineTorque - (e.RPM * 0.001)) * 5 / e.RotationalInertia
+
+		// Combine effects
+		e.RPM += (rpmFromTorque - rpmPulldown) * deltaTime
+
+		// Apply braking
+		if e.BrakeApplied {
+			brakeDecel := 5.0 // m/s²
+			e.Speed = math.Max(0, e.Speed-brakeDecel*deltaTime)
+		}
+
+	} else {
+		// CASE 3: Clutch fully engaged, in gear - direct connection
+
+		// Calculate wheel torque through drivetrain
+		gearRatio := e.getGearRatio(e.Gear)
+		finalDriveRatio := e.FinalDriveRatio
+		wheelTorque := engineTorque * gearRatio * finalDriveRatio
+
+		// Apply drivetrain efficiency
+		drivetrainEfficiency := 0.9 // 90% efficiency
+		wheelTorque *= drivetrainEfficiency
+
+		// Calculate wheel force and acceleration
+		wheelRadius := e.WheelCircumference / (2 * math.Pi)
+		wheelForce := wheelTorque / wheelRadius
+
+		// Vehicle mass and load simulation
+		vehicleMass := 200.0 // kg
+		roadGradient := 0.0  // flat road
+
+		// Factor in road gradient (simplified)
+		gravityComponent := 9.81 * math.Sin(roadGradient) * vehicleMass
+
+		// Total force = wheel force - drag - rolling resistance - gravity
+		brakeValue := 0.0
+		if e.BrakeApplied {
+			brakeValue = 1000.0 // Brake force in N
+		}
+
+		dragForce := e.DragCoefficient * e.Speed * e.Speed * 0.2
+		rollingResistance := 0.015 * vehicleMass * 9.81 // Rolling resistance coefficient * normal force
+
+		netForce := wheelForce - dragForce - rollingResistance - gravityComponent - brakeValue
+		acceleration := netForce / vehicleMass
+
+		// Update speed
+		e.Speed += acceleration * deltaTime
+		e.Speed = math.Max(0, e.Speed)
+
+		// Calculate RPM directly from wheel speed
+		if e.Speed > 0 {
+			// Speed to wheel RPM to engine RPM
+			wheelRPM := (e.Speed * 1000 / 3600) * 60 / e.WheelCircumference
+			e.RPM = wheelRPM * gearRatio * finalDriveRatio
+
+			// Limit to redline (with slight overrev allowed)
+			e.RPM = math.Min(e.RPM, e.RedlineRPM*1.05)
+		} else if e.ThrottlePosition < 5 {
+			// If stopped with throttle closed, engine may stall
+			if e.RPM < 1000 {
+				stallProbability := (1000 - e.RPM) / 1000.0
+
+				// Simple stalling model
+				if rand.Float64() < stallProbability*deltaTime*0.5 {
+					e.RPM = 0 // Engine stalled
+				}
 			}
-			e.Speed -= math.Min(e.Speed, (e.DragCoefficient*e.Speed*e.Speed*0.001+brakeValue)*deltaTime)
 		}
 	}
 
-	// Ensure RPM stays in valid range
-	e.RPM = math.Max(0, math.Min(e.RPM, e.RedlineRPM*1.05)) // Allow slight overrev
+	// Engine rev limiter
+	if e.RPM > e.RevLimit && e.RevLimit > 0 {
+		// Cut spark/fuel when hitting rev limiter
+		e.RPM = e.RevLimit - (rand.Float64() * 200) // Bouncing on limiter
+	}
 
-	// 3. Update sensor readings
+	// Ensure RPM stays in valid range and above 0
+	e.RPM = math.Max(0, math.Min(e.RPM, e.RedlineRPM*1.05))
+
+	// Update sensor readings
 	e.updateSensorReadings(ecuOutputs, deltaTime)
 
 	// Update last time
 	e.lastUpdateTime = time.Now()
+}
+
+// Calculate transmission input RPM from wheel speed
+func (e *Engine) calculateTransmissionInputRPM() float64 {
+	if e.Gear == 0 {
+		return 0.0 // Neutral
+	}
+
+	// Calculate wheel RPM from speed (km/h)
+	// Speed (km/h) = Wheel RPM * Circumference (m) * 60 / 1000
+	wheelRPM := e.Speed * 1000.0 / (e.WheelCircumference * 60.0)
+
+	// Calculate transmission input RPM
+	return wheelRPM * e.FinalDriveRatio * e.getGearRatio(e.Gear)
 }
 
 // Helper methods for the engine model
@@ -233,6 +370,19 @@ func (e *Engine) calculateBaselineTorque() float64 {
 		torqueDropoff := (rpmPercent - peakPoint) / (1.0 - peakPoint)
 		return e.MaxTorque * (1.0 - torqueDropoff*0.3)
 	}
+}
+
+// Calculate vehicle speed from engine RPM
+func (e *Engine) calculateSpeedFromRPM() float64 {
+	if e.Gear == 0 || e.ClutchPosition >= 1.0 {
+		return e.Speed // No change if clutch disengaged or in neutral
+	}
+
+	// Calculate wheel RPM
+	wheelRPM := e.RPM / (e.GearRatios[e.Gear] * e.FinalDriveRatio)
+
+	// Calculate speed
+	return wheelRPM * e.WheelCircumference * 60.0 / 1000.0
 }
 
 // Get current sensor data
@@ -286,8 +436,6 @@ func (e *Engine) GetThrottlePosition() float64 {
 	return e.ThrottlePosition
 }
 
-// Additional helper methods needed by the engine model
-
 // calculateStockInjectionTime calculates the expected stock fuel injection time
 func (e *Engine) calculateStockInjectionTime() float64 {
 	// This is a simplified model - in reality this would be based on complex maps
@@ -321,16 +469,10 @@ func (e *Engine) calculateOptimalTiming() float64 {
 
 // getGearRatio returns the gear ratio for a given gear
 func (e *Engine) getGearRatio(gear int) float64 {
-	physics := DefaultNinja650Physics()
-	if gear >= 0 && gear < len(physics.GearRatios) {
-		return physics.GearRatios[gear]
+	if gear >= 0 && gear < len(e.GearRatios) {
+		return e.GearRatios[gear]
 	}
 	return 0.0 // Neutral or invalid gear
-}
-
-func (e *Engine) applyExhaustEffects(baseTorque float64) float64 {
-	torqueMultiplier, _ := CalculateExhaustEffect(e.RPM, e.ExhaustType)
-	return baseTorque * torqueMultiplier
 }
 
 // updateSensorReadings updates simulated sensor readings

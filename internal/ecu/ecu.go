@@ -223,4 +223,3 @@ func (e *ECU) GetPerformanceStats() map[string]float64 {
 		"AFRDeviation": e.AFRDeviation,
 	}
 }
-

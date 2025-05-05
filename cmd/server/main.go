@@ -70,6 +70,15 @@ func (s *server) StreamEngine(stream pb.MotorcycleSimulator_StreamEngineServer) 
 			if ok {
 				// Update throttle position
 				s.engine.SetThrottle(input.ThrottlePosition)
+				// Update clutch position
+				s.engine.ClutchPosition = input.ClutchPosition
+
+				// Update gear
+				s.engine.Gear = int(input.Gear)
+
+				// For debugging
+				log.Printf("Input received - Throttle: %.1f%%, Clutch: %.2f, Gear: %d",
+					input.ThrottlePosition, input.ClutchPosition, input.Gear)
 			}
 		case <-ticker.C:
 			// Get sensor data from engine
@@ -80,6 +89,9 @@ func (s *server) StreamEngine(stream pb.MotorcycleSimulator_StreamEngineServer) 
 
 			// Update engine based on ECU outputs
 			s.engine.Update(ecuOutputs, 0.05) // 50ms
+
+			log.Printf("Engine state - RPM: %.1f, Speed: %.1f, Throttle: %.1f%%, Gear: %d, Clutch: %.2f",
+				s.engine.RPM, s.engine.Speed, s.engine.ThrottlePosition, s.engine.Gear, s.engine.ClutchPosition)
 
 			// Calculate performance metrics
 			power, torque := s.engine.CalculatePerformance()
@@ -93,6 +105,7 @@ func (s *server) StreamEngine(stream pb.MotorcycleSimulator_StreamEngineServer) 
 				// For example:
 				Power:           power,
 				Torque:          torque,
+				Speed:           sensorData.Speed,
 				EngineTemp:      sensorData.EngineTemperature,
 				AfrCurrent:      sensorData.O2 * 14.7, // Convert lambda to AFR
 				AfrTarget:       ecuOutputs.LambdaTarget * 14.7,
