@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 package motorcycle;
-option go_package = "github.com/yourusername/ninja650sim/proto";
+option go_package = "github.com/StevenD2002/ninja650sim/proto";
 
 // Basic engine data
 message EngineData {
