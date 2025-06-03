@@ -10,17 +10,18 @@
     "generate-proto": "protoc --proto_path=../proto --ts_out=src/generated --ts_opt=no_grpc ../proto/motorcycle.proto"
   },
   "dependencies": {
+    "google-protobuf": "^3.21.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "google-protobuf": "^3.21.2"
+    "react-redux": "^9.2.0"
   },
   "devDependencies": {
+    "@types/google-protobuf": "^3.15.12",
     "@types/react": "^18.2.37",
     "@types/react-dom": "^18.2.15",
-    "@types/google-protobuf": "^3.15.12",
     "@vitejs/plugin-react": "^4.1.1",
+    "protoc-gen-ts": "^0.8.7",
     "typescript": "^5.2.2",
-    "vite": "^5.0.0",
-    "protoc-gen-ts": "^0.8.7"
+    "vite": "^5.0.0"
   }
 }
