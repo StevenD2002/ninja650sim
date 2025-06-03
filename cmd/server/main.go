@@ -198,12 +198,17 @@ func main() {
 
 	// Create a new gRPC server
 	s := grpc.NewServer()
+	simulatorServer := NewServer()
 
 	// Register our implementation
-	pb.RegisterMotorcycleSimulatorServer(s, NewServer())
+	pb.RegisterMotorcycleSimulatorServer(s, simulatorServer)
+
+	// setup the websocket server
+	SetupWebSocketServer(simulatorServer)
 
 	// Start the server
 	log.Println("Starting Motorcycle Simulator gRPC server on :50051")
+	log.Println("WebSocket server running on :8080")
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("Failed to serve: %v", err)
 	}

@@ -1,2 +1,2 @@
 # add the node_modules directory to the .gitignore file
-./web-ui/node_modules/*
+./web-ui/node_modules/
