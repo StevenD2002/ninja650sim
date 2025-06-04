@@ -1,4 +1,27 @@
-export const transmissionPanel = ({getGearColor, getGearText}) => {
+import { useAppSelector } from '../hooks/redux';
+
+export const TransmissionPanel = () => {
+  const {
+    engineData,
+    transmission,
+  } = useAppSelector((state: any) => state.motorcycle);
+
+
+  // Helper functions
+  const getGearText = () => transmission.currentGear === 0 ? 'N' : transmission.currentGear.toString();
+  const getGearColor = () => {
+    if (engineData.rpm > 10000) return '#ef4444';
+    if (engineData.rpm > 8000) return '#eab308';
+    return '#10b981';
+  };
+  const getClutchStatus = () => {
+      if (transmission.clutchPosition > 0.8) return { text: 'DISENGAGED', color: '#ef4444' };
+      if (transmission.clutchPosition > 0.2) return { text: 'SLIPPING', color: '#eab308' };
+      return { text: 'ENGAGED', color: '#10b981' };
+  };
+
+  const clutchStatus = getClutchStatus();
+
   return (
         <div style={{ 
           backgroundColor: '#374151', 
