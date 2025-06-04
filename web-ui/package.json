@@ -10,6 +10,7 @@
     "generate-proto": "protoc --proto_path=../proto --ts_out=src/generated --ts_opt=no_grpc ../proto/motorcycle.proto"
   },
   "dependencies": {
+    "@reduxjs/toolkit": "^2.8.2",
     "google-protobuf": "^3.21.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

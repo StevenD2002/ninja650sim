@@ -28,6 +28,7 @@ export class WebSocketClient {
   private onDataCallback?: (data: WSEngineData) => void;
   private onConnectionCallback?: (connected: boolean) => void;
 
+  //TODO: need to move the url to an environment variable or config file
   constructor(private serverUrl: string = 'ws://localhost:8080/ws') {}
 
   connect(
