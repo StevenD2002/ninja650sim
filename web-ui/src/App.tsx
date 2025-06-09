@@ -1,11 +1,11 @@
 import { Provider } from 'react-redux';
 import { store } from './store';
-import Dashboard from './components/Dashboard';
+import AdvancedDashboard from './components/AdvancedDashboard';
 
 function App() {
   return (
     <Provider store={store}>
-      <Dashboard />
+      <AdvancedDashboard />
     </Provider>
   );
 }

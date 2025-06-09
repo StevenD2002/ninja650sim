@@ -75,6 +75,20 @@ type Engine struct {
 	ClutchSlip     float64 // How much power gets through partially engaged clutch
 	ClutchPosition float64 // 0.0 = fully engaged, 1.0 = fully disengaged
 	ShiftTimer     float64 // Timer for shift animation/physics
+
+	// Advanced Environmental Factors:
+	FuelOctane           float64 // 87, 91, 93, 100+ for race fuel
+	AirFilterRestriction float64 // 0.0-1.0, 0=clean, 1=completely blocked
+	AtmosphericPressure  float64 // kPa
+	Humidity             float64 // 0.0-1.0
+	FuelQuality          float64 // 0.0-1.0, accounts for ethanol content, age, etc.
+
+	// Engine condition factors
+	EngineWear    float64 // 0.0-1.0, affects compression and efficiency
+	CarbonBuildup float64 // 0.0-1.0, affects timing and efficiency
+
+	// Additional physics properties
+	FrontalArea float64 // m² for better drag calculation
 }
 
 // NewEngine creates a new engine model with default Ninja 650 parameters
@@ -129,23 +143,45 @@ func NewEngine() *Engine {
 			0.966, // 5th gear
 			0.852, // 6th gear
 		},
+
 		FinalDriveRatio:    3.067, // Chain drive ratio
 		WheelCircumference: 1.95,  // meters (650cc sport bike)
+
+		// New environmental factors
+		FuelOctane:           91.0,  // Premium fuel
+		AirFilterRestriction: 0.0,   // Clean filter
+		AtmosphericPressure:  101.3, // kPa at sea level
+		Humidity:             0.5,   // 50% humidity
+		FuelQuality:          1.0,   // Perfect fuel
+
+		// Engine condition
+		EngineWear:    0.0, // New engine
+		CarbonBuildup: 0.0, // Clean engine
+
+		// Physics
+		FrontalArea: 0.7, // m² this is more of an estimate
 	}
 }
 
 func (e *Engine) Update(ecuOutputs ECUOutputs, deltaTime float64) {
-	// Calculate baseline engine torque
+	// Get physics constants and motorcycle specs
+	physics := DefaultNinja650Physics()
+
+	// Calculate proper air density based on environment
+	airDensity := CalculateAirDensity(e.Altitude, e.AirTemp)
+
+	// Existing torque calculations...
 	baselineTorque := e.calculateBaselineTorque()
 	torqueMultiplier := 1.0
 
+	// Apply advanced environmental effects
+	torqueMultiplier = e.applyEnvironmentalEffects(torqueMultiplier, airDensity)
+
 	// Apply ECU fuel enrichment/leaning
 	if ecuOutputs.FuelInjectionTime > 0 {
-		// Compare to expected stock value
 		stockInjectionTime := e.calculateStockInjectionTime()
 		torqueMultiplier *= ecuOutputs.FuelInjectionTime / stockInjectionTime
 
-		// Too rich or too lean reduces power
 		if torqueMultiplier > 1.3 || torqueMultiplier < 0.8 {
 			torqueMultiplier = math.Max(0.5, math.Min(1.1, torqueMultiplier))
 		}
@@ -162,6 +198,10 @@ func (e *Engine) Update(ecuOutputs ECUOutputs, deltaTime float64) {
 		// Retarded timing reduces power
 		torqueMultiplier *= math.Max(0.7, 1.0+timingDifference*0.03)
 	}
+
+	// Apply octane effects on ignition timing
+	_, powerMultiplier := e.calculateOctaneEffects(ecuOutputs.IgnitionAdvance)
+	torqueMultiplier *= powerMultiplier
 
 	// Apply throttle position
 	torqueMultiplier *= e.ThrottlePosition / 100.0
@@ -215,34 +255,45 @@ func (e *Engine) Update(ecuOutputs ECUOutputs, deltaTime float64) {
 			}
 		}
 
-		// Handle vehicle deceleration (no engine braking)
-		brakeValue := 0.5
+		// Handle vehicle deceleration using proper physics
+		dragForce := CalculateAerodynamicDrag(e.Speed, e.DragCoefficient, e.FrontalArea, airDensity)
+		rollingForce := CalculateRollingResistance(e.Speed, physics.Mass, physics.RollingResistance)
+
+		brakeForce := 0.0
 		if e.BrakeApplied {
-			brakeValue = 5.0
+			brakeForce = 1000.0 // N
 		}
 
-		// Apply aerodynamic drag and rolling resistance
-		dragForce := e.DragCoefficient*e.Speed*e.Speed*0.001 + brakeValue
-		e.Speed = math.Max(0, e.Speed-dragForce*deltaTime)
+		totalResistance := (dragForce + rollingForce + brakeForce) / physics.Mass
+		e.Speed = math.Max(0, e.Speed-totalResistance*deltaTime)
 
 	} else if clutchSlipping {
 		// CASE 2: Clutch partially engaged - complex model with slip
 
-		// Calculate torque at wheels
-		gearRatio := e.getGearRatio(e.Gear)
-		finalDriveRatio := e.FinalDriveRatio
-		wheelTorque := transferTorque * gearRatio * finalDriveRatio
+		// Use proper physics calculation for wheel torque
+		wheelTorque := CalculateWheelTorqueFromEngineTorque(
+			transferTorque, e.Gear, e.GearRatios, e.FinalDriveRatio, 0.9)
 
 		// Calculate wheel force and acceleration
 		wheelRadius := e.WheelCircumference / (2 * math.Pi)
 		wheelForce := wheelTorque / wheelRadius
 
-		// Mass factor - simplified physics
-		vehicleMass := 200.0 // kg, approximate mass of Ninja 650 with rider
-		acceleration := wheelForce / vehicleMass
+		// Calculate resistance forces using proper physics
+		dragForce := CalculateAerodynamicDrag(e.Speed, e.DragCoefficient, e.FrontalArea, airDensity)
+		rollingForce := CalculateRollingResistance(e.Speed, physics.Mass, physics.RollingResistance)
+
+		brakeForce := 0.0
+		if e.BrakeApplied {
+			brakeForce = 1000.0 // N
+		}
+
+		// Net force and acceleration
+		netForce := wheelForce - dragForce - rollingForce - brakeForce
+		acceleration := netForce / physics.Mass
 
 		// Apply to speed
 		e.Speed += acceleration * deltaTime
+		e.Speed = math.Max(0, e.Speed)
 
 		// Calculate engine RPM changes due to torque and slip
 		// Engine is pulled down by transmission but also pushed by throttle
@@ -252,58 +303,43 @@ func (e *Engine) Update(ecuOutputs ECUOutputs, deltaTime float64) {
 		// Combine effects
 		e.RPM += (rpmFromTorque - rpmPulldown) * deltaTime
 
-		// Apply braking
-		if e.BrakeApplied {
-			brakeDecel := 5.0 // m/s²
-			e.Speed = math.Max(0, e.Speed-brakeDecel*deltaTime)
-		}
-
 	} else {
 		// CASE 3: Clutch fully engaged, in gear - direct connection
 
-		// Calculate wheel torque through drivetrain
-		gearRatio := e.getGearRatio(e.Gear)
-		finalDriveRatio := e.FinalDriveRatio
-		wheelTorque := engineTorque * gearRatio * finalDriveRatio
+		// Use proper physics calculation for wheel torque
+		wheelTorque := CalculateWheelTorqueFromEngineTorque(
+			engineTorque, e.Gear, e.GearRatios, e.FinalDriveRatio, 0.9)
 
-		// Apply drivetrain efficiency
-		drivetrainEfficiency := 0.9 // 90% efficiency
-		wheelTorque *= drivetrainEfficiency
-
-		// Calculate wheel force and acceleration
+		// Calculate wheel force
 		wheelRadius := e.WheelCircumference / (2 * math.Pi)
 		wheelForce := wheelTorque / wheelRadius
 
-		// Vehicle mass and load simulation
-		vehicleMass := 200.0 // kg
-		roadGradient := 0.0  // flat road
+		// Calculate resistance forces using proper physics
+		dragForce := CalculateAerodynamicDrag(e.Speed, e.DragCoefficient, e.FrontalArea, airDensity)
+		rollingForce := CalculateRollingResistance(e.Speed, physics.Mass, physics.RollingResistance)
 
-		// Factor in road gradient (simplified)
-		gravityComponent := 9.81 * math.Sin(roadGradient) * vehicleMass
+		// Road gradient (simplified - flat road)
+		roadGradient := 0.0
+		gravityComponent := 9.81 * math.Sin(roadGradient) * physics.Mass
 
-		// Total force = wheel force - drag - rolling resistance - gravity
-		brakeValue := 0.0
+		// Apply braking
+		brakeForce := 0.0
 		if e.BrakeApplied {
-			brakeValue = 1000.0 // Brake force in N
+			brakeForce = 1000.0 // N
 		}
 
-		dragForce := e.DragCoefficient * e.Speed * e.Speed * 0.2
-		rollingResistance := 0.015 * vehicleMass * 9.81 // Rolling resistance coefficient * normal force
-
-		netForce := wheelForce - dragForce - rollingResistance - gravityComponent - brakeValue
-		acceleration := netForce / vehicleMass
+		// Net force and acceleration
+		netForce := wheelForce - dragForce - rollingForce - gravityComponent - brakeForce
+		acceleration := netForce / physics.Mass
 
 		// Update speed
 		e.Speed += acceleration * deltaTime
 		e.Speed = math.Max(0, e.Speed)
 
-		// Calculate RPM directly from wheel speed
+		// Calculate RPM from speed using proper physics
 		if e.Speed > 0 {
-			// Speed to wheel RPM to engine RPM
-			wheelRPM := (e.Speed * 1000 / 3600) * 60 / e.WheelCircumference
-			e.RPM = wheelRPM * gearRatio * finalDriveRatio
-
-			// Limit to redline (with slight overrev allowed)
+			e.RPM = CalculateRPMFromSpeed(e.Speed, e.Gear, e.GearRatios,
+				e.FinalDriveRatio, physics.WheelDiameter)
 			e.RPM = math.Min(e.RPM, e.RedlineRPM*1.05)
 		} else if e.ThrottlePosition < 5 {
 			// If stopped with throttle closed, engine may stall
@@ -327,11 +363,54 @@ func (e *Engine) Update(ecuOutputs ECUOutputs, deltaTime float64) {
 	// Ensure RPM stays in valid range and above 0
 	e.RPM = math.Max(0, math.Min(e.RPM, e.RedlineRPM*1.05))
 
+	// Simulate engine wear over time
+	e.SimulateEngineWear(deltaTime)
+
 	// Update sensor readings
 	e.updateSensorReadings(ecuOutputs, deltaTime)
 
 	// Update last time
 	e.lastUpdateTime = time.Now()
+}
+
+// SetEnvironmentalConditions allows setting multiple environmental factors
+func (e *Engine) SetEnvironmentalConditions(octane, airFilterRestriction, altitude, humidity float64) {
+	e.FuelOctane = math.Max(80, math.Min(110, octane))
+	e.AirFilterRestriction = math.Max(0, math.Min(1, airFilterRestriction))
+	e.Altitude = math.Max(0, math.Min(5000, altitude)) // Up to 5000m altitude
+	e.Humidity = math.Max(0, math.Min(1, humidity))
+}
+
+// SimulateEngineWear advances engine wear over time
+func (e *Engine) SimulateEngineWear(deltaTime float64) {
+	// Wear rate depends on RPM, temperature, and load
+	baseWearRate := 0.000001 // Very slow base rate
+
+	// Higher RPM increases wear
+	rpmFactor := math.Pow(e.RPM/e.MaxRPM, 2)
+
+	// Higher temperature increases wear
+	tempFactor := math.Max(1.0, (e.EngineTemp-90.0)*0.02)
+
+	// Higher load increases wear
+	loadFactor := 1.0 + (e.ThrottlePosition / 100.0)
+
+	// Poor fuel quality increases wear
+	fuelFactor := 2.0 - e.FuelQuality
+
+	wearRate := baseWearRate * rpmFactor * tempFactor * loadFactor * fuelFactor
+
+	e.EngineWear += wearRate * deltaTime
+	e.EngineWear = math.Min(1.0, e.EngineWear)
+
+	// Carbon buildup over time (especially with rich mixtures)
+	carbonRate := 0.00001
+	if e.O2Reading < 0.95 { // Rich mixture
+		carbonRate *= 2.0
+	}
+
+	e.CarbonBuildup += carbonRate * deltaTime
+	e.CarbonBuildup = math.Min(1.0, e.CarbonBuildup)
 }
 
 // Calculate transmission input RPM from wheel speed
@@ -372,19 +451,6 @@ func (e *Engine) calculateBaselineTorque() float64 {
 	}
 }
 
-// Calculate vehicle speed from engine RPM
-func (e *Engine) calculateSpeedFromRPM() float64 {
-	if e.Gear == 0 || e.ClutchPosition >= 1.0 {
-		return e.Speed // No change if clutch disengaged or in neutral
-	}
-
-	// Calculate wheel RPM
-	wheelRPM := e.RPM / (e.GearRatios[e.Gear] * e.FinalDriveRatio)
-
-	// Calculate speed
-	return wheelRPM * e.WheelCircumference * 60.0 / 1000.0
-}
-
 // Get current sensor data
 func (e *Engine) GetSensorData() SensorData {
 	return SensorData{
@@ -421,6 +487,74 @@ func (e *Engine) CalculatePerformance() (power, torque float64) {
 	return power, torque
 }
 
+// Apply environmental effects to torque multiplier
+func (e *Engine) applyEnvironmentalEffects(torqueMultiplier, airDensity float64) float64 {
+	// Air filter restriction reduces airflow
+	airflowReduction := 1.0 - (e.AirFilterRestriction * 0.25) // Max 25% reduction
+	torqueMultiplier *= airflowReduction
+
+	// Air density effects (altitude, temperature, humidity)
+	standardAirDensity := 1.225 // kg/m³ at sea level, 15°C
+	densityFactor := airDensity / standardAirDensity
+	torqueMultiplier *= (0.7 + 0.3*densityFactor) // Partial density dependence
+
+	// Fuel quality effects
+	torqueMultiplier *= (0.9 + 0.1*e.FuelQuality) // 10% swing for fuel quality
+
+	// Engine wear effects
+	wearFactor := 1.0 - (e.EngineWear * 0.15) // Max 15% loss from wear
+	torqueMultiplier *= wearFactor
+
+	// Carbon buildup effects (reduces efficiency)
+	carbonFactor := 1.0 - (e.CarbonBuildup * 0.08) // Max 8% loss
+	torqueMultiplier *= carbonFactor
+
+	return torqueMultiplier
+}
+
+// Calculate octane effects on knock limit and power
+func (e *Engine) calculateOctaneEffects(ignitionAdvance float64) (knockLimit, powerMultiplier float64) {
+	// Base knock threshold for different octanes
+	var baseKnockThreshold float64
+	switch {
+	case e.FuelOctane >= 100:
+		baseKnockThreshold = 45.0 // Race fuel
+	case e.FuelOctane >= 93:
+		baseKnockThreshold = 35.0 // Premium
+	case e.FuelOctane >= 91:
+		baseKnockThreshold = 30.0 // Mid-grade
+	case e.FuelOctane >= 87:
+		baseKnockThreshold = 25.0 // Regular
+	default:
+		baseKnockThreshold = 20.0 // Low quality fuel
+	}
+
+	// Adjust for engine temperature and load
+	tempAdjustment := (e.EngineTemp - 90.0) * 0.15 // Hotter = more knock prone
+	loadAdjustment := e.ThrottlePosition * 0.1     // Higher load = more knock prone
+	carbonAdjustment := e.CarbonBuildup * 5.0      // Carbon increases knock tendency
+
+	knockLimit = baseKnockThreshold - tempAdjustment - loadAdjustment - carbonAdjustment
+
+	// Power multiplier based on knock proximity
+	if ignitionAdvance > knockLimit {
+		// Knock occurring - major power loss and potential damage
+		powerMultiplier = 0.6
+		// In a real implementation, you might track engine damage here
+	} else if ignitionAdvance > knockLimit*0.95 {
+		// Very close to knock - slight power loss
+		powerMultiplier = 0.95
+	} else if ignitionAdvance > knockLimit*0.8 {
+		// Getting close to knock - minimal loss
+		powerMultiplier = 0.98
+	} else {
+		// Safe operation
+		powerMultiplier = 1.0
+	}
+
+	return knockLimit, powerMultiplier
+}
+
 // SetThrottle sets the throttle position
 func (e *Engine) SetThrottle(position float64) {
 	e.ThrottlePosition = math.Max(0, math.Min(100, position))
@@ -437,18 +571,43 @@ func (e *Engine) GetThrottlePosition() float64 {
 }
 
 // calculateStockInjectionTime calculates the expected stock fuel injection time
+// the formula for injection time is based on volumetric efficiency, RPM, throttle position, and environmental factors (this is a simplified model)
 func (e *Engine) calculateStockInjectionTime() float64 {
-	// This is a simplified model - in reality this would be based on complex maps
-	// Base injection time increases with RPM and throttle
-	baseTime := 2.0 // Base milliseconds at idle
+	// Base injection time
+	baseTime := 2.0
 
-	// Adjust for RPM (simplified linear relationship)
+	// Calculate volumetric efficiency with environmental effects
+	baseVE := 0.85
+
+	// Air filter restriction
+	airflowFactor := 1.0 - (e.AirFilterRestriction * 0.3)
+
+	// Altitude effects (less dense air)
+	altitudeFactor := math.Exp(-e.Altitude / 8400.0)
+
+	// Temperature effects (colder air is denser)
+	tempFactor := (273.15 + 15.0) / (273.15 + e.AirTemp)
+
+	// Humidity reduces air density
+	humidityFactor := 1.0 - (e.Humidity * 0.02)
+
+	// Engine wear affects breathing efficiency
+	wearFactor := 1.0 - (e.EngineWear * 0.1)
+
+	// Carbon buildup affects valve operation
+	carbonFactor := 1.0 - (e.CarbonBuildup * 0.05)
+
+	// Combined volumetric efficiency
+	totalVE := baseVE * airflowFactor * altitudeFactor * tempFactor * humidityFactor * wearFactor * carbonFactor
+	totalVE = math.Max(0.3, math.Min(1.1, totalVE)) // Reasonable bounds
+
+	// RPM factor
 	rpmFactor := 1.0 + 0.5*(e.RPM-e.IdleRPM)/(e.MaxRPM-e.IdleRPM)
 
-	// Adjust for throttle position
+	// Throttle factor
 	throttleFactor := 0.5 + 0.5*(e.ThrottlePosition/100.0)
 
-	return baseTime * rpmFactor * throttleFactor
+	return baseTime * totalVE * rpmFactor * throttleFactor
 }
 
 // calculateOptimalTiming calculates the optimal ignition timing

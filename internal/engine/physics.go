@@ -58,7 +58,6 @@ func DefaultNinja650Physics() MotorcyclePhysics {
 	}
 }
 
-// CalculateAirDensity calculates air density based on altitude and temperature
 func CalculateAirDensity(altitude, temperature float64) float64 {
 	// Standard physics calculations for air density
 	constants := DefaultPhysicsConstants()
