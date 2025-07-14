@@ -1,0 +1,26 @@
+version: '3.8'
+services:
+  backend:
+    image: stevend2002/simulator-backend:latest
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  frontend:
+    image: stevend2002/simulator-frontend:latest
+    ports:
+      - "80:80"
+    environment:
+      # These will be injected at runtime if needed
+      - VITE_WS_URL=ws://steven-dew.com/ws
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge

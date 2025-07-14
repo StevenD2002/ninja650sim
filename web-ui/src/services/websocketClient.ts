@@ -27,9 +27,26 @@ export class WebSocketClient {
   private reconnectDelay = 1000;
   private onDataCallback?: (data: WSEngineData) => void;
   private onConnectionCallback?: (connected: boolean) => void;
+  private serverUrl: string;
 
-  //TODO: need to move the url to an environment variable or config file
-  constructor(private serverUrl: string = 'ws://localhost:8080/ws') {}
+  constructor(serverUrl?: string) {
+    this.serverUrl = serverUrl || this.getWebSocketUrl();
+  }
+
+  private getWebSocketUrl(): string {
+    // Check for environment variable first
+    const envUrl = import.meta.env.VITE_WS_URL;
+    if (envUrl) {
+      return envUrl
+    }
+
+    // Fallback: construct URL based on current location
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.hostname;
+    const port = import.meta.env.VITE_WS_PORT || '8080';
+    
+    return `${protocol}//${host}:${port}/ws`;
+  }
 
   connect(
     onData: (data: WSEngineData) => void,
@@ -42,8 +59,9 @@ export class WebSocketClient {
 
   private connectWebSocket(): void {
     try {
+      console.log(`🔗 Connecting to WebSocket: ${this.serverUrl}`);
       this.ws = new WebSocket(this.serverUrl);
-
+      
       this.ws.onopen = () => {
         console.log('✅ WebSocket connected to Go server');
         this.reconnectAttempts = 0;
@@ -69,7 +87,6 @@ export class WebSocketClient {
         console.error('❌ WebSocket error:', error);
         this.onConnectionCallback?.(false);
       };
-
     } catch (error) {
       console.error('❌ Error creating WebSocket:', error);
       this.handleReconnect();

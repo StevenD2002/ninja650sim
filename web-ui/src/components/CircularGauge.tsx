@@ -88,7 +88,7 @@ export const CircularGauge: React.FC<CircularGaugeProps> = ({
   };
 
   // Needle angle calculation
-  const needleAngle = -135 + angle; // Start at -135 degrees
+  const needleAngle = 90 + angle; // Start at -135 degrees
 
   return (
     <div 
@@ -106,7 +106,7 @@ export const CircularGauge: React.FC<CircularGaugeProps> = ({
       <svg
         width={size}
         height={size}
-        style={{ position: 'absolute', transform: 'rotate(-135deg)' }}
+        style={{ position: 'absolute', transform: 'rotate(135deg)' }}
       >
         {/* Background arc */}
         <circle

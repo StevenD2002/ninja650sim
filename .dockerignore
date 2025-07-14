@@ -1,0 +1,9 @@
+.git
+.gitignore
+README.md
+test/
+web-ui/node_modules/
+web-ui/dist/
+web-ui/build/
+*.log
+.env
