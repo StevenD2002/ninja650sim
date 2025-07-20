@@ -40,8 +40,8 @@ jobs:
         file: ./docker/frontend/Dockerfile
         push: true
         build-args: |
-          VITE_WS_URL=ws://${{ secrets.DO_HOST }}:8080/ws
-          VITE_WS_PORT=8080
+          VITE_WS_URL=wss://ecu.steven-dew.com/ws
+          VITE_WS_PORT=443
         tags: |
           ${{ secrets.DOCKER_USERNAME }}/motorcycle-frontend:latest
           ${{ secrets.DOCKER_USERNAME }}/motorcycle-frontend:${{ github.sha }}
@@ -49,13 +49,5 @@ jobs:
         cache-to: type=gha,mode=max
     
     - name: Deploy to Digital Ocean
-      uses: appleboy/ssh-action@v1.0.0
-      with:
-        host: ${{ secrets.DO_HOST }}
-        username: ${{ secrets.DO_USERNAME }}
-        key: ${{ secrets.DO_SSH_KEY }}
-        script: |
-          cd /app
-          docker compose -f docker-compose.prod.yml pull
-          docker compose -f docker-compose.prod.yml up -d
-          docker image prune -f
+      run: |
+        curl -X POST http://${{ secrets.DO_HOST }}:9000/hooks/deploy-motorcycle-app
