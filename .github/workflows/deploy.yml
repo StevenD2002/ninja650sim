@@ -39,7 +39,7 @@ jobs:
         context: ./web-ui
         file: ./docker/frontend/Dockerfile
         push: true
-        args: |
+        build-args: |
           VITE_WS_URL=ws://${{ secrets.DO_HOST }}:8080/ws
           VITE_WS_PORT=8080
         tags: |
