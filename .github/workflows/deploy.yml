@@ -48,6 +48,6 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
     
-    - name: Deploy to Digital Ocean
+    - name: Fetch the images on the droplet
       run: |
         curl -X POST http://${{ secrets.DO_HOST }}:9000/hooks/deploy-motorcycle-app
